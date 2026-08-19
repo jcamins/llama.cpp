@@ -380,6 +380,7 @@ struct vk_queue {
     bool transfer_only;
 };
 
+// how many mul_mat_vec column pipelines to build. must be >= any value used at runtime
 static constexpr uint32_t mul_mat_vec_max_cols = 16;
 
 static constexpr uint32_t p021_max_gqa_ratio = 8;

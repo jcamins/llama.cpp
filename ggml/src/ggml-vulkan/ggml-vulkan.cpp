@@ -1,8 +1,8 @@
 #include "ggml-vulkan-common.h"
 
-// runtime cap for the mul_mat_vec column count, for tuning only
+// runtime cap on the column count, for tuning. 8 is the upstream default
 static uint32_t ggml_vk_mmv_max_cols() {
-    static const uint32_t n = getenv("GGML_VK_MMV_MAX_COLS") ? std::min((uint32_t) atoi(getenv("GGML_VK_MMV_MAX_COLS")), mul_mat_vec_max_cols) : mul_mat_vec_max_cols;
+    static const uint32_t n = getenv("GGML_VK_MMV_MAX_COLS") ? std::min((uint32_t) atoi(getenv("GGML_VK_MMV_MAX_COLS")), mul_mat_vec_max_cols) : 8;
     return n;
 }
 
