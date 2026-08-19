@@ -386,12 +386,13 @@ class vk_perf_logger;
 static void ggml_vk_destroy_buffer(vk_buffer& buf);
 static void ggml_vk_synchronize(ggml_backend_vk_context * ctx);
 
+// how many mul_mat_vec column pipelines to build. must be >= any value used at runtime
 static constexpr uint32_t mul_mat_vec_max_cols = 16;
 static constexpr uint32_t p021_max_gqa_ratio = 8;
 
-// runtime cap for the mul_mat_vec column count, for tuning only
+// runtime cap on the column count, for tuning. 8 is the upstream default
 static uint32_t ggml_vk_mmv_max_cols() {
-    static const uint32_t n = getenv("GGML_VK_MMV_MAX_COLS") ? std::min((uint32_t) atoi(getenv("GGML_VK_MMV_MAX_COLS")), mul_mat_vec_max_cols) : mul_mat_vec_max_cols;
+    static const uint32_t n = getenv("GGML_VK_MMV_MAX_COLS") ? std::min((uint32_t) atoi(getenv("GGML_VK_MMV_MAX_COLS")), mul_mat_vec_max_cols) : 8;
     return n;
 }
 
