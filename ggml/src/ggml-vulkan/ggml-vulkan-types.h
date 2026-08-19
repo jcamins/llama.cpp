@@ -380,7 +380,7 @@ struct vk_queue {
     bool transfer_only;
 };
 
-static constexpr uint32_t mul_mat_vec_max_cols = 8;
+static constexpr uint32_t mul_mat_vec_max_cols = 16;
 
 static constexpr uint32_t p021_max_gqa_ratio = 8;
 
