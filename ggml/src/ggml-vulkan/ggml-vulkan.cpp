@@ -389,6 +389,12 @@ static void ggml_vk_synchronize(ggml_backend_vk_context * ctx);
 static constexpr uint32_t mul_mat_vec_max_cols = 8;
 static constexpr uint32_t p021_max_gqa_ratio = 8;
 
+// Upper bound on neq2*KV*N for a single flash-attention dispatch on Intel, where larger
+// dispatches return wrong results. Measured failure thresholds on Iris Xe are >= 536M
+// (head size 128/256) and >= 1.07G (head size 512 with block_rows 4), so this leaves a
+// 4x margin. Only used to decide how many query rows one dispatch may cover.
+static constexpr uint64_t fa_max_work_per_dispatch = 128ull * 1024 * 1024;
+
 enum vk_device_architecture {
     OTHER,
     AMD_GCN,
@@ -10938,8 +10944,35 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     }
 
     assert(pipeline);
+
+    // Decide up front how many query-row chunks the dispatch will be split into (see the
+    // dispatch loop below for why). This has to happen before requesting descriptor sets,
+    // since each chunk is a separate dispatch and consumes one set. Br comes from
+    // fa_pipeline_state rather than pipeline->wg_denoms, which is not initialized yet.
+    uint32_t rows_per_dispatch = (uint32_t)neq1;
+    if (ctx->device->vendor_id == VK_VENDOR_ID_INTEL &&
+        gqa_ratio == 1 && neq3 == 1 && nem2 <= 1 && nem3 <= 1 &&
+        (uint64_t)neq2 * KV * (uint64_t)neq1 > fa_max_work_per_dispatch) {
+
+        const uint32_t Br_ = fa_pipeline_state.Br;
+        const uint64_t align = ctx->device->properties.limits.minStorageBufferOffsetAlignment;
+        const uint64_t mo_dwords = CEIL_DIV(nem0, 16 * fa_pipeline_state.Bc);
+        // Every chunk offset is a multiple of Br_ rows, so it is enough that one Br_-row
+        // step of each buffer is aligned for all the descriptor offsets to be legal.
+        const bool aligned_steps =
+            (((uint64_t)Br_ * nbq1) % align == 0) &&
+            (((uint64_t)Br_ * nb2)  % align == 0) &&
+            (!mask        || ((uint64_t)Br_ * KV * sizeof(ggml_fp16_t)) % align == 0) &&
+            (!use_mask_opt || (mo_dwords * sizeof(uint32_t)) % align == 0);
+        if (aligned_steps) {
+            const uint32_t max_rows = (uint32_t)std::max<uint64_t>(1, fa_max_work_per_dispatch / ((uint64_t)neq2 * KV));
+            rows_per_dispatch = std::max(Br_, (max_rows / Br_) * Br_);
+        }
+    }
+    const uint32_t n_row_chunks = CEIL_DIV((uint32_t)neq1, rows_per_dispatch);
+
     // Compile early to initialize wg_denoms.
-    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+    ggml_pipeline_request_descriptor_sets(ctx, pipeline, n_row_chunks);
 
     uint32_t split_kv = KV;
     uint32_t split_k = 1;
@@ -11122,9 +11155,51 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
             // When using gqa, we want one actual workgroup per batch, so cancel out wg_denoms
             workgroups_x *= pipeline->wg_denoms[0];
         }
-        ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-                                    {q_buf, k_buf, v_buf, mask_buf, sinks_buf, dst_buf, mask_opt_buf},
-                                    pc, { workgroups_x, workgroups_y, workgroups_z });
+
+        // On Intel, a single FA dispatch returns wrong results once its total work gets
+        // large. The threshold tracks neq2*KV*N - the workgroup count times the length of
+        // the KV loop each workgroup runs - rather than any single dimension, so it is
+        // reached at long context regardless of how the work is shaped. Bound the work per
+        // dispatch by splitting the query rows over several dispatches (rows_per_dispatch
+        // was decided above, where the descriptor sets are requested). Rows are independent
+        // - each writes its own dst rows and needs no reduction - so this only moves base
+        // offsets, costs no extra K/V traffic (every workgroup already reads all of K/V)
+        // and leaves the total number of workgroups unchanged.
+        const uint32_t rows_step = gqa_ratio == 1 ? rows_per_dispatch : workgroups_x;
+
+        for (uint32_t r0 = 0; r0 < workgroups_x; r0 += rows_step) {
+            const uint32_t rows = std::min(rows_step, workgroups_x - r0);
+
+            vk_flash_attn_push_constants pc_chunk = pc;
+            if (gqa_ratio == 1) {
+                // Only meaningful without gqa; with gqa, pc.N is the head count and
+                // workgroups_x counts tokens, so rows_step makes this loop run once.
+                pc_chunk.N    = rows;
+                pc_chunk.nem1 = nem1 > r0 ? nem1 - r0 : 0;
+            }
+
+            // p.ne1/p.ne2/p.ne3 are left at their full values on purpose: with neq3 == 1
+            // the only consumer (the iq3 term of the dst offset) is multiplied by zero.
+            vk_subbuffer q_c = q_buf, dst_c = dst_buf, m_c = mask_buf, mo_c = mask_opt_buf;
+            auto advance = [](vk_subbuffer & b, uint64_t bytes) {
+                b.offset += bytes;
+                b.size    = b.size > bytes ? b.size - bytes : 0;
+            };
+            if (r0 != 0) {
+                advance(q_c,   (uint64_t)r0 * nbq1);
+                advance(dst_c, (uint64_t)r0 * nb2);
+                if (mask) {
+                    advance(m_c, (uint64_t)r0 * KV * sizeof(ggml_fp16_t));
+                }
+                if (use_mask_opt) {
+                    advance(mo_c, (uint64_t)(r0 / pipeline->wg_denoms[0]) * mask_opt_num_dwords * sizeof(uint32_t));
+                }
+            }
+
+            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+                                        {q_c, k_buf, v_buf, m_c, sinks_buf, dst_c, mo_c},
+                                        pc_chunk, { rows, workgroups_y, workgroups_z });
+        }
     }
 
     if (use_dequant_kv) {

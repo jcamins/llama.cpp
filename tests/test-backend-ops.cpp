@@ -9974,6 +9974,26 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {8, 1}, 16384, 4096, true, false, 0, 0,
                                                     GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
 
+    // LONG-CONTEXT PROBE (temporary): Gemma-4 full-attention shape at context lengths up
+    // to its full 262144, at -ub 4096. neq2*KV*N reaches 17.2G here, ~16x past the point
+    // where a single dispatch miscomputes, so these only pass if the work is split.
+    // KV-ISOLATION PROBE (temporary): nb is deliberately tiny so neq2*KV*nb stays well under
+    // the per-dispatch work cap. Any failure here therefore comes from the KV loop length
+    // alone, which row-splitting does not change. 16384 is the control (passes today);
+    // 32768 and up are the cases row-splitting failed to fix.
+    // Long-context cases that exercise the per-dispatch work split (neq2*KV*N up to 1.07G,
+    // ~8x the split threshold). Capped at kv=16384: beyond that the accumulated rounding
+    // error of the KV reduction alone exceeds this test's fixed 5e-4 NMSE tolerance, at
+    // every head size and independently of this backend, so larger cases would fail for
+    // reasons unrelated to what they are meant to check.
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {8, 1}, 16384, 4096, true, false, 0, 0,
+                                                    GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {8, 1}, 8192, 4096, true, false, 0, 0,
+                                                    GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    // and the SWA shape at the same context, which uses a windowed cache so kv stays small
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 8, {2, 1}, 5120, 4096, true, false, 0, 0,
+                                                    GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+
     // dense-allocated (non-view) quant K/V at batch >= 64, in cache and native layouts
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {1, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 2, 1, 3}, false));
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {4, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 2, 1, 3}, false));
