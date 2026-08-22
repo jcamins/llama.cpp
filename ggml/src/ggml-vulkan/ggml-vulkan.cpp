@@ -3752,6 +3752,14 @@ static vk_fa_tuning_params get_fa_tuning_params_scalar(const vk_device& device, 
         }
 
         result.block_cols = (D & 8) ? 64 : 32;
+
+        // On Intel, head size 512 with block_rows 8 produces wrong results once enough
+        // workgroups are in flight - the O accumulator alone is block_rows*hsv/workgroup_size
+        // floats per thread (32 at hsv=512, vs 8 at hsv=128), so the shader spills heavily.
+        // Halving block_rows fixes it; shared memory is not the constraint here.
+        if (device->vendor_id == VK_VENDOR_ID_INTEL && std::max(hsk, hsv) >= 512) {
+            result.block_rows = std::min(result.block_rows, 4u);
+        }
     }
 
     const uint32_t D_lsb = D ^ (D & (D-1));  // extract lowest set bit

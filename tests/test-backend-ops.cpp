@@ -9957,6 +9957,23 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                                                         GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     }
 
+    // Gemma-4 full-attention layer shape: hsk=hsv=512, head_count_kv=2, head_count=16
+    for (int kv : { 2048, 3328, 4096, 8192 }) {
+        for (int nb : { 512, 2048, 4096 }) {
+            test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {8, 1}, kv, nb, true, false, 0, 0,
+                                                            GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
+    // Gemma-4 SWA layer shape: hsk=hsv=256, head_count_kv=8, head_count=16, window 1024
+    for (int kv : { 1536, 2048, 5120 }) {
+        for (int nb : { 512, 4096 }) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 8, {2, 1}, kv, nb, true, false, 0, 0,
+                                                            GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {8, 1}, 16384, 4096, true, false, 0, 0,
+                                                    GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+
     // dense-allocated (non-view) quant K/V at batch >= 64, in cache and native layouts
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {1, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 2, 1, 3}, false));
     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {4, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 2, 1, 3}, false));
