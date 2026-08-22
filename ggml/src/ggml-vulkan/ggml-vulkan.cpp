@@ -11205,6 +11205,19 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     if (use_dequant_kv) {
         ctx->prealloc_x_need_sync = true;
     }
+    if (use_mask_opt) {
+        // The mask-opt bitmask lives in prealloc_y and is read by the dispatches above.
+        // Without this, the next op to write prealloc_y (e.g. a matmul staging its
+        // dequantized B there) gets no barrier and can clobber it while it is still
+        // being read. This flag was checked here but never set.
+        ctx->prealloc_y_need_sync = true;
+        // We just overwrote whatever conversion result was staged in prealloc_y, so the
+        // cache describing it is stale. Leaving it would let a later matmul on the same B
+        // tensor take a cache hit and read this bitmask as its B matrix.
+        ctx->prealloc_y_last_pipeline_used = nullptr;
+        ctx->prealloc_y_last_tensor_used = nullptr;
+        ctx->prealloc_y_last_decode_vector_staging = false;
+    }
 }
 
 static vk_conv_shapes ggml_vk_conv_select_shape(ggml_backend_vk_context * ctx, uint32_t K, uint32_t NPQ) {
